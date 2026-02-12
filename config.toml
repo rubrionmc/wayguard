@@ -1,0 +1,52 @@
+#          _       __                                       __
+#         | |     / /___ ___  ______ ___  ______ __________/ /
+#         | | /| / / __ `/ / / / __ `/ / / / __ `/ ___/ __  /
+#         | |/ |/ / /_/ / /_/ / /_/ / /_/ / /_/ / /  / /_/ /
+#         |__/|__/\__,_/\__, /\__, /\__,_/\__,_/_/   \__,_/
+#                      /____//____/
+#
+# Go TCP gateway that automatically routes traffic to a healthy backend.
+
+[server]
+# Address and port the proxy listens on
+# "IP:PORT" or ":PORT" for all interfaces
+listen = ":25565"
+
+
+[discovery]
+# If enabled, backends can be discovered dynamically (e.g. via k8s api)
+# To support this feature KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT must be defined
+enabled = true
+# Namespace used for discovery separation
+# Useful if multiple environments share the same discovery system
+namespace = "rubrion"
+
+
+[timeouts]
+# Supported units are: ns, us, ms, s, m, h and commbinations of these
+# The units s, m and h do support decimal nummbers
+# Maximum time to wait when connecting to a backend server
+backend_dial = "5s"
+# Interval between discovery calls to the k8s api
+discovery_interval = "3s"
+# Timeout for health check connection attempts
+healthcheck_dial = "2s"
+# Interval between automatic health checks
+healthcheck_interval = "3s"
+
+
+# This is the main target server
+# Normal operating backend for all traffic
+[backends.primary]
+# K8s label for resolving the IPs for normal traffic
+type = "velocity" # any k8s type
+# Port of the backend service
+port = 25575
+
+# Used when primary backend is unavailable
+# Usually a service that shows a custom "no connection" / maintenance screen
+[backends.fallback]
+# K8s label for resolving the IP for break-outs
+type = "fallback"
+# Port for fallback service
+port = 25575
