@@ -1,0 +1,22 @@
+                           LICENSE DEFINITIONS
+
+This project is governed by two Rubrion licenses:
+
+1. Rubrion Public License (RPL) – Version 1, 2025
+   - Applies to all software and code-based components of this project.
+   - Includes all source code, scripts, plugins, modules, or any executable code.
+   - Link: https://rubrionmc.github.io/.github/licensens/RUBRION_PUBLIC_LICENSE
+
+2. Rubrion Content License (RCL) – Version 1, 2025
+   - Applies to all non-code creative works of this project.
+   - Includes artwork, maps, story content, game concepts, media files, music, videos, text, and other intellectual property.
+   - Link: https://rubrionmc.github.io/.github/licensens/RUBRION_CONTENT_LICENSE
+
+Project-Wide Rule:
+- Any part of the project that is code falls under the RPL.
+- Any part of the project that is non-code content falls under the RCL.
+- Hybrid works containing both code and creative content must comply with both licenses:
+  - Code portions: RPL
+  - Content portions: RCL
+
+By using this project, you agree to comply with the terms of the respective license for each part of the project.
