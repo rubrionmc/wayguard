@@ -48,7 +48,7 @@ func (p *Proxy) Start() error {
 	defer func(listener net.Listener) {
 		err := listener.Close()
 		if err != nil {
-			log.Printf("failed to close listener on %s: %w", p.config.Server.Listen, err)
+			log.Printf("Failed to close listener on %s: %v", p.config.Server.Listen, err)
 		}
 	}(listener)
 

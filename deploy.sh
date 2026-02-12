@@ -33,6 +33,12 @@ REPO=$(echo "$REMOTE_URL" | sed -E 's#.*/([^/]+)/([^/.]+)(\.git)?#\2#')
 IMAGE="ghcr.io/${OWNER}/${REPO}"
 TAG="dev"
 
+# clean up old local images
+echo " => Removing old local images for ${IMAGE}:${TAG} (if any)..."
+if docker image inspect "${IMAGE}:${TAG}" &> /dev/null; then
+  docker rmi -f "${IMAGE}:${TAG}"
+fi
+
 echo " => Building local dev image: ${IMAGE}:${TAG}"
 docker build -t "${IMAGE}:${TAG}" .
 

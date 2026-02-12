@@ -19,7 +19,7 @@ listen = ":25565"
 enabled = true
 # Namespace used for discovery separation
 # Useful if multiple environments share the same discovery system
-namespace = "rubrion"
+namespace = "rubrionmc"
 
 
 [timeouts]
@@ -39,7 +39,7 @@ healthcheck_interval = "3s"
 # Normal operating backend for all traffic
 [backends.primary]
 # K8s label for resolving the IPs for normal traffic
-type = "velocity" # any k8s type
+type = "velocity-deployment"
 # Port of the backend service
 port = 25575
 
@@ -47,6 +47,6 @@ port = 25575
 # Usually a service that shows a custom "no connection" / maintenance screen
 [backends.fallback]
 # K8s label for resolving the IP for break-outs
-type = "fallback"
+type = "fallback-deployment"
 # Port for fallback service
 port = 25575
