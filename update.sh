@@ -1,5 +1,7 @@
 #!/bin/bash
 set -e
+# shellcheck source=src/util.sh
+source ~/.bashrc
 
 # helper function for colored echos
 info() {
@@ -59,6 +61,29 @@ else
     export LOCAL_DEV_TAGS
 fi
 
+# publish to Bash shell config
+BASHRC="$HOME/.bashrc"
+if ! grep -q "export LOCAL_DEV_TAGS=" "$BASHRC"; then
+    echo "export LOCAL_DEV_TAGS=\"$LOCAL_DEV_TAGS\"" >> "$BASHRC"
+    info "LOCAL_DEV_TAGS added to $BASHRC"
+else
+    # Ersetze alte Zeile
+    sed -i.bak "/export LOCAL_DEV_TAGS=/c\export LOCAL_DEV_TAGS=\"$LOCAL_DEV_TAGS\"" "$BASHRC"
+    info "LOCAL_DEV_TAGS updated in $BASHRC"
+fi
+
+# publish to Fish shell config
+FISH_CONF="$HOME/.config/fish/config.fish"
+mkdir -p "$(dirname "$FISH_CONF")"
+
+if ! grep -q "set -x LOCAL_DEV_TAGS" "$FISH_CONF"; then
+    echo "set -x LOCAL_DEV_TAGS \"$LOCAL_DEV_TAGS\"" >> "$FISH_CONF"
+    info "LOCAL_DEV_TAGS added to $FISH_CONF (Fish)"
+else
+    sed -i.bak "/set -x LOCAL_DEV_TAGS/c\set -x LOCAL_DEV_TAGS \"$LOCAL_DEV_TAGS\"" "$FISH_CONF"
+    info "LOCAL_DEV_TAGS updated in $FISH_CONF (Fish)"
+fi
+
 # clean up old deployments
 info "Clean up all old local images..."
 docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' \
@@ -69,7 +94,7 @@ docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' \
 info "Building local dev image: ${IMAGE}:${LOCAL_TAG}"
 docker build -t "${IMAGE}:${LOCAL_TAG}" .
 
-# Also tag as 'dev' for backwards compatibility
+# also tag as 'dev' for backwards compatibility
 docker tag "${IMAGE}:${LOCAL_TAG}" "${IMAGE}:dev"
 
 # load image into minikube
