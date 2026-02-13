@@ -31,7 +31,7 @@ jobs:
         run: |
           OWNER="${GITHUB_REPOSITORY%%/*}"
           REPO="${GITHUB_REPOSITORY##*/}"
-          TAG_NAME="${GITHUB_REF#refs/tags/}"  # z.B. v1.2.3
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
 
           # Extrahiere Major Version (v1)
           MAJOR_VERSION=$(echo "$TAG_NAME" | cut -d. -f1)

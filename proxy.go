@@ -99,7 +99,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	backendAddr := fmt.Sprintf("%s:%d", backendIP, p.getBackendPort())
 
 	dialer := &net.Dialer{
-		Timeout: time.Duration(p.config.Timeouts.BackendDial),
+		Timeout: time.Duration(p.config.Timings.BackendDial),
 	}
 
 	backendConn, err := dialer.Dial("tcp", backendAddr)
@@ -195,7 +195,7 @@ func (p *Proxy) setBackend(backendType, ip string) {
 }
 
 func (p *Proxy) startHealthChecking() {
-	interval := time.Duration(p.config.Timeouts.HealthcheckInterval)
+	interval := time.Duration(p.config.Timings.HealthcheckInterval)
 	p.healthTicker = time.NewTicker(interval)
 
 	go func() {
@@ -229,7 +229,7 @@ func (p *Proxy) isBackendHealthy(ip string) bool {
 	backendAddr := fmt.Sprintf("%s:%d", ip, p.getBackendPort())
 
 	dialer := &net.Dialer{
-		Timeout: time.Duration(p.config.Timeouts.HealthcheckDial),
+		Timeout: time.Duration(p.config.Timings.HealthcheckDial),
 	}
 
 	conn, err := dialer.Dial("tcp", backendAddr)
@@ -259,7 +259,7 @@ func (p *Proxy) markBackendUnhealthy() {
 }
 
 func (p *Proxy) startDiscovery() {
-	interval := time.Duration(p.config.Timeouts.DiscoveryInterval)
+	interval := time.Duration(p.config.Timings.DiscoveryInterval)
 	p.discoveryTicker = time.NewTicker(interval)
 
 	go func() {
@@ -290,7 +290,7 @@ func (p *Proxy) performDiscovery() {
 		if len(primaryIPs) > 0 {
 			primaryAddr := fmt.Sprintf("%s:%d", primaryIPs[0], p.config.Backends.Primary.Port)
 			dialer := &net.Dialer{
-				Timeout: time.Duration(p.config.Timeouts.HealthcheckDial),
+				Timeout: time.Duration(p.config.Timings.HealthcheckDial),
 			}
 
 			if conn, err := dialer.Dial("tcp", primaryAddr); err == nil {
