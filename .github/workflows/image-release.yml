@@ -50,6 +50,6 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}  # z.B. v1.2.3
-            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.major_version }} # z.B. v1
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.major_version }}
             ${{ steps.vars.outputs.image }}:latest
