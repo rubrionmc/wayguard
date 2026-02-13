@@ -31,26 +31,26 @@ OWNER=$(echo "$REMOTE_URL" | sed -E 's#.*/([^/]+)/([^/.]+)(\.git)?#\1#')
 REPO=$(echo "$REMOTE_URL" | sed -E 's#.*/([^/]+)/([^/.]+)(\.git)?#\2#')
 
 IMAGE="ghcr.io/${OWNER}/${REPO}"
-TAG="dev"
 
-# clean up old local images
-echo " => Removing old local images for ${IMAGE}:${TAG} (if any)..."
-if docker image inspect "${IMAGE}:${TAG}" &> /dev/null; then
-  docker rmi -f "${IMAGE}:${TAG}"
-fi
+# Use timestamp-based tag for local dev to force image update
+LOCAL_TAG="local-$(date +%s)"
+export LOCAL_DEV_TAG="$LOCAL_TAG"
 
-echo " => Building local dev image: ${IMAGE}:${TAG}"
-docker build -t "${IMAGE}:${TAG}" .
+echo " => Building local dev image: ${IMAGE}:${LOCAL_TAG}"
+docker build -t "${IMAGE}:${LOCAL_TAG}" .
+
+# Also tag as 'dev' for backwards compatibility
+docker tag "${IMAGE}:${LOCAL_TAG}" "${IMAGE}:dev"
 
 # load image into local clusters
 if command -v minikube &> /dev/null; then
   echo " => Loading image into minikube..."
-  minikube image load "${IMAGE}:${TAG}"
+  minikube image load "${IMAGE}:${LOCAL_TAG}"
 fi
 
 if command -v kind &> /dev/null; then
   echo " => Loading image into kind..."
-  kind load docker-image "${IMAGE}:${TAG}"
+  kind load docker-image "${IMAGE}:${LOCAL_TAG}"
 fi
 
 echo " => Start deployment in ../k8s"
@@ -61,5 +61,4 @@ echo " => Start deployment in ../k8s"
 )
 wait
 
-
-echo "[+] Done: ${IMAGE}:${TAG} deployed"
+echo "[+] Done: ${IMAGE}:${LOCAL_TAG} deployed"
