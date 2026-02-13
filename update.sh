@@ -40,10 +40,28 @@ OWNER=$(echo "$REMOTE_URL" | sed -E 's#.*/([^/]+)/([^/.]+)(\.git)?#\1#')
 REPO=$(echo "$REMOTE_URL" | sed -E 's#.*/([^/]+)/([^/.]+)(\.git)?#\2#')
 
 IMAGE="ghcr.io/${OWNER}/${REPO}"
-
-# use timestamp-based tag for local dev to force image update
 LOCAL_TAG="local-$(date +%s)"
-export LOCAL_DEV_TAG="$LOCAL_TAG"
+
+# update LOCAL_DEV_TAGS env var
+info "Updating LOCAL_DEV_TAGS with ${IMAGE}:${LOCAL_TAG}"
+NEW_ENTRY="${IMAGE}:${LOCAL_TAG}"
+if [[ -z "$LOCAL_DEV_TAGS" ]]; then
+    export LOCAL_DEV_TAGS="$NEW_ENTRY"
+else
+    IFS=',' read -r -a TAG_ARRAY <<< "$LOCAL_DEV_TAGS"
+    UPDATED=false
+    for i in "${!TAG_ARRAY[@]}"; do
+        if [[ "${TAG_ARRAY[$i]}" == ${IMAGE}:* ]]; then
+            TAG_ARRAY[$i]="$NEW_ENTRY"
+            UPDATED=true
+        fi
+    done
+    if ! $UPDATED; then
+        TAG_ARRAY+=("$NEW_ENTRY")
+    fi
+    LOCAL_DEV_TAGS=$(IFS=','; echo "${TAG_ARRAY[*]}")
+    export LOCAL_DEV_TAGS
+fi
 
 # clean up old deployments
 info "Clean up all old local images..."
@@ -74,7 +92,7 @@ fi
 info "Start deployment in ../k8s"
 (
   cd ../k8s || exit 1
-  ./deploy.sh
+  sh deploy.sh
 )
 
 # final message

@@ -96,7 +96,7 @@ docker build -t wayguard:latest .
 
 or use the deploy.sh to deploy the proxy directly to a local Kubernetes cluster:
 ```bash
-sh deploy.sh
+sh update.sh
 ```
 
 3. Prepare the configuration file `config.toml` or specify a custom path with `-config`/`-c`.
