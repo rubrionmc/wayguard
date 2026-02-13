@@ -22,7 +22,7 @@ enabled = true
 namespace = "rubrionmc"
 
 
-[timeouts]
+[timings]
 # Supported units are: ns, us, ms, s, m, h and commbinations of these
 # The units s, m and h do support decimal nummbers
 # Maximum time to wait when connecting to a backend server
@@ -33,7 +33,8 @@ discovery_interval = "3s"
 healthcheck_dial = "2s"
 # Interval between automatic health checks
 healthcheck_interval = "3s"
-
+# Interval between automatic log updates (e.g. backend status)
+log_rate_limit_interval = "1m"
 
 # This is the main target server
 # Normal operating backend for all traffic
@@ -42,6 +43,7 @@ healthcheck_interval = "3s"
 type = "velocity-deployment"
 # Port of the backend service
 port = 25575
+
 
 # Used when primary backend is unavailable
 # Usually a service that shows a custom "no connection" / maintenance screen

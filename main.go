@@ -9,11 +9,6 @@ import (
 	"wayguard/k8s"
 )
 
-const (
-	retryInterval = 2 * time.Second
-	logInterval   = 30 * time.Second
-)
-
 func main() {
 
 	log.Printf("Starting proxy with config file: %s", "config.toml")
@@ -26,6 +21,9 @@ func main() {
 	if !k8s.IsInClusterEnv() {
 		log.Fatal("Instance is not in a client cluster environment KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT will be null")
 	}
+
+	retryInterval := time.Duration(config.Timings.DiscoveryInterval) * time.Millisecond
+	logInterval := time.Duration(config.Timings.LogRateLimitInterval) * time.Millisecond
 
 	client, err := k8s.NewInClusterClient()
 	if err != nil {
@@ -49,7 +47,9 @@ func main() {
 
 				if lastLog.IsZero() || now.Sub(lastLog) >= logInterval {
 					log.Printf("Proxy failed: %v", err)
-					log.Printf("Retrying every %s (logging every %s)", retryInterval, logInterval)
+					if lastLog.IsZero() {
+						log.Printf("Retrying every %s (logging every %s)", retryInterval, logInterval)
+					}
 					lastLog = now
 				}
 

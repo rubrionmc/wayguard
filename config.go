@@ -8,7 +8,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-type DurationMs int64
+type DurationMs time.Duration
 
 func (d *DurationMs) UnmarshalText(text []byte) error {
 	str := string(text)
@@ -25,7 +25,7 @@ func (d *DurationMs) UnmarshalText(text []byte) error {
 type Config struct {
 	Server    ServerConfig    `toml:"server"`
 	Discovery DiscoveryConfig `toml:"discovery"`
-	Timeouts  TimeoutsConfig  `toml:"timeouts"`
+	Timings   TimingConfig    `toml:"timings"`
 	Backends  BackendsConfig  `toml:"backends"`
 }
 
@@ -38,11 +38,12 @@ type DiscoveryConfig struct {
 	Namespace string `toml:"namespace"`
 }
 
-type TimeoutsConfig struct {
-	BackendDial         DurationMs `toml:"backend_dial"`
-	DiscoveryInterval   DurationMs `toml:"discovery_interval"`
-	HealthcheckDial     DurationMs `toml:"healthcheck_dial"`
-	HealthcheckInterval DurationMs `toml:"healthcheck_interval"`
+type TimingConfig struct {
+	BackendDial          DurationMs `toml:"backend_dial"`
+	DiscoveryInterval    DurationMs `toml:"discovery_interval"`
+	HealthcheckDial      DurationMs `toml:"healthcheck_dial"`
+	HealthcheckInterval  DurationMs `toml:"healthcheck_interval"`
+	LogRateLimitInterval DurationMs `toml:"log_rate_limit_interval"`
 }
 
 type BackendsConfig struct {
