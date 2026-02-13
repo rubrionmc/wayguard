@@ -31,10 +31,13 @@ jobs:
         run: |
           OWNER="${GITHUB_REPOSITORY%%/*}"
           REPO="${GITHUB_REPOSITORY##*/}"
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          TAG_NAME="${GITHUB_REF#refs/tags/}"  # z.B. v1.2.3
+
+          # Extrahiere Major Version (v1)
+          MAJOR_VERSION=$(echo "$TAG_NAME" | cut -d. -f1)
 
           IMAGE="ghcr.io/${OWNER}/${REPO}"
-          
+
           echo "owner=${OWNER}" >> $GITHUB_OUTPUT
           echo "repo=${REPO}" >> $GITHUB_OUTPUT
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT
@@ -47,6 +50,6 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}  # z.B. v1.2.3
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.major_version }} # z.B. v1
             ${{ steps.vars.outputs.image }}:latest
-            ${{ steps.vars.outputs.image }}:dev

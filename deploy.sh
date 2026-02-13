@@ -53,7 +53,7 @@ if command -v kind &> /dev/null; then
   kind load docker-image "${IMAGE}:${TAG}"
 fi
 
-echo "=> Start deployment in ../k8s"
+echo " => Start deployment in ../k8s"
 
 (
   cd ../k8s || exit 1
