@@ -1,13 +1,9 @@
 #!/bin/bash
 set -e
 
-# ANSI colors
-BLUE='\033[34m'
-RESET='\033[0m'
-
 # helper function for colored echos
 info() {
-  echo -e "${BLUE} => $*${RESET}"
+  ../util/send_info.sh "$*"
 }
 
 # check git
