@@ -34,8 +34,8 @@ if [ -z "$REMOTE_URL" ]; then
 fi
 
 # auto-detect repo info
-OWNER=$(echo "$REMOTE_URL" | sed -E 's#.*/([^/]+)/([^/.]+)(\.git)?#\1#')
-REPO=$(echo "$REMOTE_URL" | sed -E 's#.*/([^/]+)/([^/.]+)(\.git)?#\2#')
+OWNER=$(echo "$REMOTE_URL" | sed -E 's#(git@github.com:|https://github.com/)([^/]+)/([^/.]+)(\.git)?#\2#')
+REPO=$(echo "$REMOTE_URL"  | sed -E 's#(git@github.com:|https://github.com/)([^/]+)/([^/.]+)(\.git)?#\3#')
 
 IMAGE="ghcr.io/${OWNER}/${REPO}"
 LOCAL_TAG="local-$(date +%s)"
