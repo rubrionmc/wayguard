@@ -5,7 +5,7 @@ source ~/.bashrc
 
 # helper function for colored echos
 info() {
-  ../util/send_info.sh "$*"
+  ../k8s/util/send_info.sh "$*"
 }
 
 # check git
@@ -40,49 +40,40 @@ REPO=$(echo "$REMOTE_URL" | sed -E 's#.*/([^/]+)/([^/.]+)(\.git)?#\2#')
 IMAGE="ghcr.io/${OWNER}/${REPO}"
 LOCAL_TAG="local-$(date +%s)"
 
-# update LOCAL_DEV_TAGS env var
-info "Updating LOCAL_DEV_TAGS with ${IMAGE}:${LOCAL_TAG}"
+# update DEV_TAGS file
+info "Updating DEV_TAGS file with ${IMAGE}:${LOCAL_TAG}"
 NEW_ENTRY="${IMAGE}:${LOCAL_TAG}"
-if [[ -z "$LOCAL_DEV_TAGS" ]]; then
-    export LOCAL_DEV_TAGS="$NEW_ENTRY"
-else
-    IFS=',' read -r -a TAG_ARRAY <<< "$LOCAL_DEV_TAGS"
-    UPDATED=false
-    for i in "${!TAG_ARRAY[@]}"; do
-        if [[ "${TAG_ARRAY[$i]}" == ${IMAGE}:* ]]; then
-            TAG_ARRAY[$i]="$NEW_ENTRY"
-            UPDATED=true
-        fi
-    done
-    if ! $UPDATED; then
-        TAG_ARRAY+=("$NEW_ENTRY")
+DEV_TAGS_FILE="../k8s/.run/DEV_TAGS"
+
+# create file if it doesn't exist
+mkdir -p "$(dirname "$DEV_TAGS_FILE")"
+touch "$DEV_TAGS_FILE"
+
+# remove existing entry for this image and add new one
+temp_file=$(mktemp)
+ENTRY_ADDED=false
+
+while IFS= read -r line || [ -n "$line" ]; do
+  if [[ -z "$line" || "$line" == \#* ]]; then
+    echo "$line" >> "$temp_file"
+    continue
+  fi
+  if [[ "$line" == ${IMAGE}:* ]]; then
+    if ! $ENTRY_ADDED; then
+      echo "$NEW_ENTRY" >> "$temp_file"
+      ENTRY_ADDED=true
     fi
-    LOCAL_DEV_TAGS=$(IFS=','; echo "${TAG_ARRAY[*]}")
-    export LOCAL_DEV_TAGS
+  else
+    echo "$line" >> "$temp_file"
+  fi
+done < "$DEV_TAGS_FILE"
+
+if ! $ENTRY_ADDED; then
+  echo "$NEW_ENTRY" >> "$temp_file"
 fi
 
-# publish to Bash shell config
-BASHRC="$HOME/.bashrc"
-if ! grep -q "export LOCAL_DEV_TAGS=" "$BASHRC"; then
-    echo "export LOCAL_DEV_TAGS=\"$LOCAL_DEV_TAGS\"" >> "$BASHRC"
-    info "LOCAL_DEV_TAGS added to $BASHRC"
-else
-    # Ersetze alte Zeile
-    sed -i.bak "/export LOCAL_DEV_TAGS=/c\export LOCAL_DEV_TAGS=\"$LOCAL_DEV_TAGS\"" "$BASHRC"
-    info "LOCAL_DEV_TAGS updated in $BASHRC"
-fi
-
-# publish to Fish shell config
-FISH_CONF="$HOME/.config/fish/config.fish"
-mkdir -p "$(dirname "$FISH_CONF")"
-
-if ! grep -q "set -x LOCAL_DEV_TAGS" "$FISH_CONF"; then
-    echo "set -x LOCAL_DEV_TAGS \"$LOCAL_DEV_TAGS\"" >> "$FISH_CONF"
-    info "LOCAL_DEV_TAGS added to $FISH_CONF (Fish)"
-else
-    sed -i.bak "/set -x LOCAL_DEV_TAGS/c\set -x LOCAL_DEV_TAGS \"$LOCAL_DEV_TAGS\"" "$FISH_CONF"
-    info "LOCAL_DEV_TAGS updated in $FISH_CONF (Fish)"
-fi
+mv "$temp_file" "$DEV_TAGS_FILE"
+info "DEV_TAGS file updated: $NEW_ENTRY"
 
 # clean up old deployments
 info "Clean up all old local images..."
