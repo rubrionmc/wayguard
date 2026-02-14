@@ -18,6 +18,9 @@ func main() {
 		log.Fatalf("Error loading config Proxy failed to start: %v", err)
 	}
 
+	log.Printf("primary: %v", config.Backends.Primary.Type)
+	log.Printf("fallback: %v", config.Backends.Fallback.Type)
+
 	if !k8s.IsInClusterEnv() {
 		log.Fatal("Instance is not in a client cluster environment KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT will be null")
 	}

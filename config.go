@@ -52,8 +52,9 @@ type BackendsConfig struct {
 }
 
 type BackendConfig struct {
-	Type string `toml:"type"`
-	Port int    `toml:"port"`
+	Type    string `toml:"type"`
+	Port    int    `toml:"port"`
+	Service string `toml:"service"`
 }
 
 func LoadConfigFromFile(path string) (*Config, error) {

@@ -43,6 +43,8 @@ log_rate_limit_interval = "1m"
 type = "velocity"
 # Port of the backend service
 port = 25575
+# The service to use should ba a ClusterIP service that is only accessible from within the cluster
+service = "velocity.rubrionmc.svc.cluster.local"
 
 
 # Used when primary backend is unavailable
@@ -52,3 +54,5 @@ port = 25575
 type = "nonconnector"
 # Port for fallback service
 port = 25575
+# The service to use should ba a ClusterIP service that is only accessible from within the cluster
+service = "nonconnector.rubrionmc.svc.cluster.local"
