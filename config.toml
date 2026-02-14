@@ -49,6 +49,6 @@ port = 25575
 # Usually a service that shows a custom "no connection" / maintenance screen
 [backends.fallback]
 # K8s label for resolving the IP for break-outs
-type = "fallback"
+type = "nonconnector"
 # Port for fallback service
 port = 25575
