@@ -40,7 +40,7 @@ log_rate_limit_interval = "1m"
 # Normal operating backend for all traffic
 [backends.primary]
 # K8s label for resolving the IPs for normal traffic
-type = "velocity-deployment"
+type = "velocity"
 # Port of the backend service
 port = 25575
 
@@ -49,6 +49,6 @@ port = 25575
 # Usually a service that shows a custom "no connection" / maintenance screen
 [backends.fallback]
 # K8s label for resolving the IP for break-outs
-type = "fallback-deployment"
+type = "fallback"
 # Port for fallback service
 port = 25575
