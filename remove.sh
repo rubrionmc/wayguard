@@ -5,6 +5,8 @@ info() {
   "$RK8S"/util/send_info.sh "$*"
 }
 
+echo "[*] Remove local images and entry's..."
+
 # check git
 if ! command -v git &> /dev/null; then
   echo "[x] Could not find 'git': not installed. Please install git."

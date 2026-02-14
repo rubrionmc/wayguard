@@ -8,6 +8,8 @@ info() {
   "$RK8S"/util/send_info.sh "$*"
 }
 
+echo "[*] Starting local image build..."
+
 # check git
 if ! command -v git &> /dev/null; then
   echo "[x] Could not found 'git': not installed. Please install git."
