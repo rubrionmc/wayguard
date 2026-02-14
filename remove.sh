@@ -2,7 +2,7 @@
 set -e
 
 info() {
-  ../k8s/util/send_info.sh "$*"
+  "$RK8S"/util/send_info.sh "$*"
 }
 
 # check git
@@ -26,7 +26,7 @@ IMAGE="ghcr.io/${OWNER}/${REPO}"
 
 info "Removing entry for ${IMAGE} from DEV_TAGS file..."
 
-DEV_TAGS_FILE="../k8s/.run/DEV_TAGS"
+DEV_TAGS_FILE="$RK8S/.run/DEV_TAGS"
 
 if [ -f "$DEV_TAGS_FILE" ]; then
   temp_file=$(mktemp)
@@ -54,9 +54,9 @@ else
   touch "$DEV_TAGS_FILE"
 fi
 
-info "Redeploying k8s without this local image"
+info "Redeploying $RK8S without this local image"
 (
-  cd ../k8s || exit 1
+  cd "$RK8S" || exit 1
   sh deploy.sh
 )
 

@@ -5,7 +5,7 @@ source ~/.bashrc
 
 # helper function for colored echos
 info() {
-  ../k8s/util/send_info.sh "$*"
+  "$RK8S"/util/send_info.sh "$*"
 }
 
 # check git
@@ -43,7 +43,7 @@ LOCAL_TAG="local-$(date +%s)"
 # update DEV_TAGS file
 info "Updating DEV_TAGS file with ${IMAGE}:${LOCAL_TAG}"
 NEW_ENTRY="${IMAGE}:${LOCAL_TAG}"
-DEV_TAGS_FILE="../k8s/.run/DEV_TAGS"
+DEV_TAGS_FILE="$RK8S/.run/DEV_TAGS"
 
 # create file if it doesn't exist
 mkdir -p "$(dirname "$DEV_TAGS_FILE")"
@@ -101,9 +101,9 @@ if command -v kind &> /dev/null; then
 fi
 
 # deploy to k8s
-info "Start deployment in ../k8s"
+info "Start deployment in $RK8S"
 (
-  cd ../k8s || exit 1
+  cd "$RK8S" || exit 1
   sh deploy.sh
 )
 
