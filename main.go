@@ -1,79 +1,42 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
-	"wayguard/k8s"
 )
 
 func main() {
+	var configPath string
 
-	log.Printf("Starting proxy with config file: %s", "config.toml")
+	flag.StringVar(&configPath, "c", "", "Path to config file")
+	flag.StringVar(&configPath, "config", "", "Path to config file")
 
-	config, err := LoadConfigFromFile("config.toml")
+	flag.Parse()
+
+	if configPath == "" {
+		configPath = "config.toml"
+	}
+
+	config, err := LoadConfigFromFile(configPath)
 	if err != nil {
-		log.Fatalf("Error loading config Proxy failed to start: %v", err)
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	log.Printf("primary: %v", config.Backends.Primary.Type)
-	log.Printf("fallback: %v", config.Backends.Fallback.Type)
+	fmt.Println("Using config:", configPath)
 
-	if !k8s.IsInClusterEnv() {
-		log.Fatal("Instance is not in a client cluster environment KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT will be null")
-	}
-
-	retryInterval := time.Duration(config.Timings.DiscoveryInterval) * time.Millisecond
-	logInterval := time.Duration(config.Timings.LogRateLimitInterval) * time.Millisecond
-
-	client, err := k8s.NewInClusterClient()
-	if err != nil {
-		log.Fatalf("Error while creating client Helper: %v", err)
-	}
-
-	proxy := NewProxy(config, client)
+	proxy := NewProxy(config)
+	proxy.Start()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	stopChan := make(chan struct{})
-
-	go func() {
-		var lastLog time.Time
-
-		for {
-			err := proxy.Start()
-			if err != nil {
-				now := time.Now()
-
-				if lastLog.IsZero() || now.Sub(lastLog) >= logInterval {
-					log.Printf("Proxy failed: %v", err)
-					if lastLog.IsZero() {
-						log.Printf("Retrying every %s (logging every %s)", retryInterval, logInterval)
-					}
-					lastLog = now
-				}
-
-				select {
-				case <-time.After(retryInterval):
-					continue
-				case <-stopChan:
-					return
-				}
-			}
-
-			select {
-			case <-stopChan:
-				return
-			}
-		}
-	}()
-
+	log.Println("Proxy is running. Press Ctrl+C to stop.")
 	<-sigChan
-	log.Println("Shutting down proxy...")
-	close(stopChan)
+
+	log.Println("Received shutdown signal, stopping proxy...")
 	proxy.Stop()
-	log.Println("Proxy stopped")
 }

@@ -34,8 +34,8 @@ type ServerConfig struct {
 }
 
 type DiscoveryConfig struct {
-	Enabled   bool   `toml:"enabled"`
-	Namespace string `toml:"namespace"`
+	Namespace        string `toml:"namespace"`
+	K8sClusterDomain string `toml:"k8s_cluster_domain"`
 }
 
 type TimingConfig struct {
@@ -52,9 +52,8 @@ type BackendsConfig struct {
 }
 
 type BackendConfig struct {
-	Type    string `toml:"type"`
-	Port    int    `toml:"port"`
-	Service string `toml:"service"`
+	Name string `toml:"name"`
+	Port int    `toml:"port"`
 }
 
 func LoadConfigFromFile(path string) (*Config, error) {

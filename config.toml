@@ -20,6 +20,8 @@ enabled = true
 # Namespace used for discovery separation
 # Useful if multiple environments share the same discovery system
 namespace = "rubrionmc"
+# Kubernetes cluster domain for service resolution
+k8s_cluster_domain = "svc.cluster.local"
 
 
 [timings]
@@ -36,23 +38,20 @@ healthcheck_interval = "3s"
 # Interval between automatic log updates (e.g. backend status)
 log_rate_limit_interval = "1m"
 
+
+[backends.primary]
 # This is the main target server
 # Normal operating backend for all traffic
-[backends.primary]
-# K8s label for resolving the IPs for normal traffic
-type = "velocity"
+# K8s name of a service for resolving the IPs for normal traffic
+name = "velocity"
 # Port of the backend service
 port = 25575
-# The service to use should ba a ClusterIP service that is only accessible from within the cluster
-service = "velocity.rubrionmc.svc.cluster.local"
 
 
+[backends.fallback]
 # Used when primary backend is unavailable
 # Usually a service that shows a custom "no connection" / maintenance screen
-[backends.fallback]
-# K8s label for resolving the IP for break-outs
-type = "nonconnector"
+# K8s name of a service for resolving the IPs for normal traffic
+name = "nonconnector"
 # Port for fallback service
 port = 25575
-# The service to use should ba a ClusterIP service that is only accessible from within the cluster
-service = "nonconnector.rubrionmc.svc.cluster.local"

@@ -1,79 +1,408 @@
 package main
 
 import (
+	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"strings"
 	"sync"
 	"time"
-
-	"wayguard/k8s"
 )
 
+type BackendType int
+
+const (
+	BackendPrimary BackendType = iota
+	BackendFallback
+)
+
+type Backend struct {
+	Type    BackendType
+	Name    string
+	Port    int
+	Address string
+	Healthy bool
+}
+
 type Proxy struct {
-	config            *Config
-	k8sClient         *k8s.Client
-	currentBackend    string
-	currentBackendIP  string
-	primaryInfo       *k8s.BackendInfo
-	fallbackInfo      *k8s.BackendInfo
-	backendMutex      sync.RWMutex
-	stopChan          chan struct{}
-	healthTicker      *time.Ticker
-	discoveryTicker   *time.Ticker
-	lastSwitchTime    time.Time
-	switchCooldown    time.Duration
-	discovering       bool
-	discoveryMutex    sync.Mutex
-	healthFailures    int
-	maxHealthFailures int
-	lastFailureTime   time.Time
-	gracePeriod       time.Duration
+	config   *Config
+	backends map[BackendType]*Backend
+	mu       sync.RWMutex
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 }
 
-func NewProxy(config *Config, k8sClient *k8s.Client) *Proxy {
+func NewProxy(config *Config) *Proxy {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	backends := map[BackendType]*Backend{
+		BackendPrimary: {
+			Type:    BackendPrimary,
+			Name:    config.Backends.Primary.Name,
+			Port:    config.Backends.Primary.Port,
+			Healthy: false,
+		},
+		BackendFallback: {
+			Type:    BackendFallback,
+			Name:    config.Backends.Fallback.Name,
+			Port:    config.Backends.Fallback.Port,
+			Healthy: false,
+		},
+	}
+
 	return &Proxy{
-		config:            config,
-		k8sClient:         k8sClient,
-		stopChan:          make(chan struct{}),
-		switchCooldown:    5 * time.Second,  // Reduced cooldown for better responsiveness
-		maxHealthFailures: 3,                // Force service fallback after 3 consecutive health failures
-		gracePeriod:       30 * time.Second, // Wait 30s before retrying after all backends fail
+		config:   config,
+		backends: backends,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 }
 
-func (p *Proxy) Start() error {
-	if err := p.discoverBackends(); err != nil {
-		return fmt.Errorf("initial backend discovery failed: %w", err)
+func (p *Proxy) Start() {
+	p.discoverBackends()
+	p.checkAllBackends()
+	p.printBackendStatus()
+
+	p.wg.Add(1)
+	go p.healthCheckLoop()
+
+	p.wg.Add(1)
+	go p.statusLoop()
+
+	if p.config.Discovery.Namespace != "" {
+		p.wg.Add(1)
+		go p.discoveryLoop()
 	}
 
-	p.startHealthChecking()
+	p.wg.Add(1)
+	go p.startTCPListener()
+}
 
-	if p.config.Discovery.Enabled {
-		p.startDiscovery()
-	}
+func (p *Proxy) Stop() {
+	log.Println("Stopping proxy...")
+	p.cancel()
+	p.wg.Wait()
+	log.Println("Proxy stopped")
+}
 
-	listener, err := net.Listen("tcp", p.config.Server.Listen)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", p.config.Server.Listen, err)
-	}
-	defer func(listener net.Listener) {
-		err := listener.Close()
-		if err != nil {
-			log.Printf("Failed to close listener on %s: %v", p.config.Server.Listen, err)
+func (p *Proxy) getBackend(typ BackendType) *Backend {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if b, ok := p.backends[typ]; ok {
+		return &Backend{
+			Type:    b.Type,
+			Name:    b.Name,
+			Port:    b.Port,
+			Address: b.Address,
+			Healthy: b.Healthy,
 		}
-	}(listener)
+	}
+	return nil
+}
 
-	log.Printf("Proxy server started on %s", p.config.Server.Listen)
+func (p *Proxy) setBackendHealth(typ BackendType, healthy bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if backend, ok := p.backends[typ]; ok {
+		backend.Healthy = healthy
+	}
+}
+
+func (p *Proxy) setBackendAddress(typ BackendType, address string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if backend, ok := p.backends[typ]; ok {
+		backend.Address = address
+	}
+}
+
+func (p *Proxy) healthCheckLoop() {
+	defer p.wg.Done()
+
+	ticker := time.NewTicker(time.Duration(p.config.Timings.HealthcheckInterval) * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.checkAllBackends()
+		}
+	}
+}
+
+func (p *Proxy) statusLoop() {
+	defer p.wg.Done()
+
+	ticker := time.NewTicker(time.Duration(p.config.Timings.LogRateLimitInterval) * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.printBackendStatus()
+		}
+	}
+}
+
+func (p *Proxy) checkAllBackends() {
+	for typ := range p.backends {
+		p.checkBackend(typ)
+	}
+}
+
+func (p *Proxy) checkBackend(typ BackendType) {
+	backend := p.getBackend(typ)
+	if backend == nil || backend.Address == "" {
+		p.setBackendHealth(typ, false)
+		return
+	}
+
+	timeout := time.Duration(p.config.Timings.HealthcheckDial) * time.Millisecond
+	healthy := p.pingMinecraftServer(backend.Address, timeout)
+
+	wasHealthy := backend.Healthy
+
+	if !healthy {
+		p.setBackendHealth(typ, false)
+		if wasHealthy {
+			log.Printf("%s (%s) - UNHEALTHY", backend.Name, backend.Address)
+		}
+		return
+	}
+
+	if !wasHealthy {
+		log.Printf("%s (%s) - HEALTHY", backend.Name, backend.Address)
+	}
+	p.setBackendHealth(typ, true)
+}
+
+func (p *Proxy) pingMinecraftServer(address string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", address, timeout)
+	if err != nil {
+		return false
+	}
+	defer func(conn net.Conn) {
+		err := conn.Close()
+		if err != nil {
+			log.Printf("Error closing connection: %s", err)
+		}
+	}(conn)
+
+	err = conn.SetDeadline(time.Now().Add(timeout * 3))
+	if err != nil {
+		log.Printf("Error setting deadline: %s", err)
+		return false
+	}
+
+	host, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+
+	handshake := createHandshakePacket(host, portStr, 0x01)
+	if _, err := conn.Write(handshake); err != nil {
+		return false
+	}
+
+	statusRequest := []byte{0x01, 0x00}
+	if _, err := conn.Write(statusRequest); err != nil {
+		return false
+	}
+
+	packetLength, err := readVarInt(conn)
+	if err != nil {
+		return false
+	}
+
+	if packetLength <= 0 || packetLength > 32767 {
+		return false
+	}
+
+	response := make([]byte, packetLength)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return false
+	}
+
+	return true
+}
+
+func createHandshakePacket(host, port string, nextState byte) []byte {
+	var data []byte
+
+	data = appendVarInt(data, 0x00)
+	data = appendVarInt(data, 47)
+	data = appendVarInt(data, int32(len(host)))
+	data = append(data, []byte(host)...)
+
+	portNum := 25575
+	_, err := fmt.Sscanf(port, "%d", &portNum)
+	if err != nil {
+		log.Printf("Error parsing port number: %s", err)
+		return nil
+	}
+	portBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(portBytes, uint16(portNum))
+	data = append(data, portBytes...)
+
+	data = appendVarInt(data, int32(nextState))
+
+	packet := appendVarInt([]byte{}, int32(len(data)))
+	packet = append(packet, data...)
+
+	return packet
+}
+
+func appendVarInt(data []byte, value int32) []byte {
+	for {
+		temp := byte(value & 0x7F)
+		value >>= 7
+		if value != 0 {
+			temp |= 0x80
+		}
+		data = append(data, temp)
+		if value == 0 {
+			break
+		}
+	}
+	return data
+}
+
+func readVarInt(r io.Reader) (int32, error) {
+	var result int32
+	var numRead uint
+
+	for {
+		buf := make([]byte, 1)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return 0, err
+		}
+
+		value := buf[0]
+		result |= int32(value&0x7F) << (7 * numRead)
+
+		numRead++
+		if numRead > 5 {
+			return 0, fmt.Errorf("VarInt too big")
+		}
+
+		if (value & 0x80) == 0 {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+func (p *Proxy) printBackendStatus() {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	log.Println("=== Backend Status ===")
+	for _, backend := range p.backends {
+		status := "UNHEALTHY"
+		if backend.Healthy {
+			status = "HEALTHY"
+		}
+		log.Printf("%s - %s (%s)", backend.Name, status, backend.Address)
+	}
+	log.Println("======================")
+}
+
+func (p *Proxy) discoveryLoop() {
+	defer p.wg.Done()
+
+	ticker := time.NewTicker(time.Duration(p.config.Timings.DiscoveryInterval) * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.discoverBackends()
+		}
+	}
+}
+
+func (p *Proxy) discoverBackends() {
+	clusterDomain := p.config.Discovery.K8sClusterDomain
+	namespace := p.config.Discovery.Namespace
+
+	for typ, backend := range p.backends {
+		serviceDNS := fmt.Sprintf("%s.%s.%s", backend.Name, namespace, clusterDomain)
+		address := fmt.Sprintf("%s:%d", serviceDNS, backend.Port)
+
+		currentBackend := p.getBackend(typ)
+		if currentBackend == nil {
+			log.Printf("Backend type %d not found in config", typ)
+			continue
+		}
+
+		if currentBackend.Address != address {
+			p.setBackendAddress(typ, address)
+			log.Printf("Discovered backend %s at %s", backend.Name, address)
+			p.checkBackend(typ)
+		}
+	}
+}
+
+func (p *Proxy) GetHealthyBackend() *Backend {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if primary := p.backends[BackendPrimary]; primary != nil && primary.Healthy {
+		return &Backend{
+			Type:    primary.Type,
+			Name:    primary.Name,
+			Port:    primary.Port,
+			Address: primary.Address,
+			Healthy: primary.Healthy,
+		}
+	}
+
+	if fallback := p.backends[BackendFallback]; fallback != nil && fallback.Healthy {
+		return &Backend{
+			Type:    fallback.Type,
+			Name:    fallback.Name,
+			Port:    fallback.Port,
+			Address: fallback.Address,
+			Healthy: fallback.Healthy,
+		}
+	}
+
+	return nil
+}
+
+func (p *Proxy) startTCPListener() {
+	defer p.wg.Done()
+
+	listenAddr := p.config.Server.Listen
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatalf("Failed to start listener on %s: %v", listenAddr, err)
+	}
+	defer listener.Close()
+
+	log.Printf("Listening on %s", listenAddr)
+
+	go func() {
+		<-p.ctx.Done()
+		listener.Close()
+	}()
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			select {
-			case <-p.stopChan:
-				return nil
+			case <-p.ctx.Done():
+				return
 			default:
 				log.Printf("Error accepting connection: %v", err)
 				continue
@@ -84,503 +413,37 @@ func (p *Proxy) Start() error {
 	}
 }
 
-func (p *Proxy) Stop() {
-	close(p.stopChan)
-
-	if p.healthTicker != nil {
-		p.healthTicker.Stop()
-	}
-
-	if p.discoveryTicker != nil {
-		p.discoveryTicker.Stop()
-	}
-}
-
 func (p *Proxy) handleConnection(clientConn net.Conn) {
-	defer func(clientConn net.Conn) {
-		err := clientConn.Close()
-		if err != nil {
-			log.Printf("Failed to close client connection: %v", err)
-		}
-	}(clientConn)
+	defer clientConn.Close()
 
-	backendAddr, backendType := p.getBackendAddress()
-	if backendAddr == "" {
-		log.Printf("No available backend for connection from %s", clientConn.RemoteAddr())
+	backend := p.GetHealthyBackend()
+	if backend == nil {
+		log.Printf("No healthy backend available for connection from %s", clientConn.RemoteAddr())
 		return
 	}
 
-	dialer := &net.Dialer{
-		Timeout: time.Duration(p.config.Timings.BackendDial),
-	}
-
-	backendConn, err := dialer.Dial("tcp", backendAddr)
+	backendConn, err := net.DialTimeout("tcp", backend.Address,
+		time.Duration(p.config.Timings.HealthcheckDial)*time.Millisecond)
 	if err != nil {
-		log.Printf("Failed to connect to backend %s (%s): %v", backendAddr, backendType, err)
-		p.markBackendUnhealthy()
+		log.Printf("Failed to connect to backend %s: %v", backend.Address, err)
 		return
 	}
-	defer func(backendConn net.Conn) {
-		err := backendConn.Close()
-		if err != nil {
-			log.Printf("Failed to close backend connection: %v", err)
-		}
-	}(backendConn)
+	defer backendConn.Close()
 
-	log.Printf("Proxying connection %s -> %s (%s)", clientConn.RemoteAddr(), backendAddr, backendType)
+	log.Printf("Proxying connection from %s to %s (%s)",
+		clientConn.RemoteAddr(), backend.Name, backend.Address)
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	done := make(chan struct{}, 2)
 
 	go func() {
-		defer wg.Done()
-		_, err := io.Copy(backendConn, clientConn)
-		if err != nil {
-			log.Printf("Failed to copy client to backend: %v", err)
-		}
+		io.Copy(backendConn, clientConn)
+		done <- struct{}{}
 	}()
 
 	go func() {
-		defer wg.Done()
-		_, err := io.Copy(clientConn, backendConn)
-		if err != nil {
-			log.Printf("Failed to copy backend to client: %v", err)
-		}
+		io.Copy(clientConn, backendConn)
+		done <- struct{}{}
 	}()
 
-	wg.Wait()
-}
-
-// getBackendAddress returns the backend address and type
-// Prefers service name, falls back to IP if service is not available
-// Falls back to IP if DNS resolution fails
-func (p *Proxy) getBackendAddress() (string, string) {
-	p.backendMutex.RLock()
-	defer p.backendMutex.RUnlock()
-
-	if p.currentBackend == "" {
-		return "", ""
-	}
-
-	var service string
-	var port int
-
-	if p.currentBackend == "primary" {
-		service = p.config.Backends.Primary.Service
-		port = p.config.Backends.Primary.Port
-	} else {
-		service = p.config.Backends.Fallback.Service
-		port = p.config.Backends.Fallback.Port
-	}
-
-	// Prefer service name if available
-	if service != "" {
-		serviceAddr := fmt.Sprintf("%s:%d", service, port)
-
-		// Test if service name resolves
-		if p.testDNSResolution(service) {
-			return serviceAddr, p.currentBackend
-		} else {
-			log.Printf("DNS resolution failed for %s, falling back to IP", service)
-		}
-	}
-
-	// Fallback to IP
-	if p.currentBackendIP != "" {
-		return fmt.Sprintf("%s:%d", p.currentBackendIP, port), p.currentBackend
-	}
-
-	return "", ""
-}
-
-func (p *Proxy) testDNSResolution(hostname string) bool {
-	// Simple DNS resolution test
-	_, err := net.LookupHost(hostname)
-	return err == nil
-}
-
-func (p *Proxy) getCurrentBackend() string {
-	p.backendMutex.RLock()
-	defer p.backendMutex.RUnlock()
-	return p.currentBackendIP
-}
-
-func (p *Proxy) getBackendPort() int {
-	p.backendMutex.RLock()
-	defer p.backendMutex.RUnlock()
-
-	if p.currentBackend == "primary" {
-		return p.config.Backends.Primary.Port
-	}
-	return p.config.Backends.Fallback.Port
-}
-
-func (p *Proxy) discoverBackends() error {
-	// Prevent multiple discovery calls from running simultaneously
-	p.discoveryMutex.Lock()
-	if p.discovering {
-		p.discoveryMutex.Unlock()
-		log.Printf("Discovery already in progress, skipping")
-		return nil
-	}
-	p.discovering = true
-	p.discoveryMutex.Unlock()
-
-	defer func() {
-		p.discoveryMutex.Lock()
-		p.discovering = false
-		p.discoveryMutex.Unlock()
-	}()
-
-	if !p.config.Discovery.Enabled {
-		return nil
-	}
-
-	namespace := p.config.Discovery.Namespace
-
-	// Get primary backend info
-	primaryInfo, err := p.k8sClient.GetBackendInfo(namespace, p.config.Backends.Primary.Type, p.config.Backends.Primary.Service)
-	if err != nil {
-		log.Printf("Error discovering primary backends: %v", err)
-	} else {
-		p.backendMutex.Lock()
-		p.primaryInfo = primaryInfo
-		p.backendMutex.Unlock()
-
-		if len(primaryInfo.Pods) > 0 {
-			readyPods := p.getReadyPods(primaryInfo.Pods)
-			if len(readyPods) > 0 {
-				p.setBackend("primary", readyPods[0].IP)
-				log.Printf("Discovered %d primary pods (%d ready), selected: %s", len(primaryInfo.Pods), len(readyPods), readyPods[0].Name)
-				return nil
-			}
-		}
-	}
-
-	// Get fallback backend info
-	fallbackInfo, err := p.k8sClient.GetBackendInfo(namespace, p.config.Backends.Fallback.Type, p.config.Backends.Fallback.Service)
-	if err != nil {
-		return fmt.Errorf("error discovering fallback backends: %w", err)
-	}
-
-	p.backendMutex.Lock()
-	p.fallbackInfo = fallbackInfo
-	p.backendMutex.Unlock()
-
-	if len(fallbackInfo.Pods) > 0 {
-		readyPods := p.getReadyPods(fallbackInfo.Pods)
-		if len(readyPods) > 0 {
-			p.setBackend("fallback", readyPods[0].IP)
-			log.Printf("No primary backends available, using fallback: %s (%d pods, %d ready)", readyPods[0].Name, len(fallbackInfo.Pods), len(readyPods))
-			return nil
-		}
-	}
-
-	return fmt.Errorf("no backends available")
-}
-
-func (p *Proxy) getReadyPods(pods []k8s.PodInfo) []k8s.PodInfo {
-	var readyPods []k8s.PodInfo
-	for _, pod := range pods {
-		if pod.Ready {
-			readyPods = append(readyPods, pod)
-		}
-	}
-	return readyPods
-}
-
-func (p *Proxy) setBackend(backendType, ip string) {
-	p.backendMutex.Lock()
-	defer p.backendMutex.Unlock()
-
-	// Allow switching if clearing backend or if cooldown has passed
-	if backendType != "" && time.Since(p.lastSwitchTime) < p.switchCooldown && p.currentBackend != "" {
-		log.Printf("Backend switch cooldown active, skipping switch from %s to %s", p.currentBackend, backendType)
-		return
-	}
-
-	p.currentBackend = backendType
-	p.currentBackendIP = ip
-	p.lastSwitchTime = time.Now()
-
-	if backendType != "" {
-		log.Printf("Switched to %s backend: %s", backendType, ip)
-	} else {
-		log.Printf("Cleared backend (no backend available)")
-	}
-}
-
-func (p *Proxy) startHealthChecking() {
-	interval := time.Duration(p.config.Timings.HealthcheckInterval)
-	p.healthTicker = time.NewTicker(interval)
-
-	go func() {
-		for {
-			select {
-			case <-p.stopChan:
-				return
-			case <-p.healthTicker.C:
-				p.performHealthCheck()
-			}
-		}
-	}()
-}
-
-func (p *Proxy) performHealthCheck() {
-	p.backendMutex.RLock()
-	currentBackend := p.currentBackend
-	lastFailure := p.lastFailureTime
-	p.backendMutex.RUnlock()
-
-	// If we're in grace period after all backends failed, skip health checks
-	if currentBackend == "" && time.Since(lastFailure) < p.gracePeriod {
-		return
-	}
-
-	if currentBackend == "" {
-		if err := p.discoverBackends(); err != nil {
-			log.Printf("Health check: Failed to discover backends: %v", err)
-			p.backendMutex.Lock()
-			p.lastFailureTime = time.Now()
-			p.backendMutex.Unlock()
-		}
-		return
-	}
-
-	if !p.isBackendHealthy() {
-		p.backendMutex.Lock()
-		p.healthFailures++
-		currentBackendType := p.currentBackend
-		p.backendMutex.Unlock()
-
-		log.Printf("Health check failed for current backend %s (failure %d/%d)", currentBackendType, p.healthFailures, p.maxHealthFailures)
-
-		// Force service fallback after multiple consecutive failures
-		if p.healthFailures >= p.maxHealthFailures {
-			log.Printf("Too many consecutive health failures (%d), forcing service fallback", p.healthFailures)
-			p.forceServiceFallback()
-			p.healthFailures = 0 // Reset counter
-		} else {
-			p.markBackendUnhealthy()
-		}
-	} else {
-		// Reset failure counter on successful health check
-		p.backendMutex.Lock()
-		p.healthFailures = 0
-		p.backendMutex.Unlock()
-	}
-}
-
-// isBackendHealthy checks the health of the current backend
-// Uses service name if available, falls back to IP
-func (p *Proxy) isBackendHealthy() bool {
-	backendAddr, backendType := p.getBackendAddress()
-	if backendAddr == "" {
-		return false
-	}
-
-	dialer := &net.Dialer{
-		Timeout: time.Duration(p.config.Timings.HealthcheckDial),
-	}
-
-	conn, err := dialer.Dial("tcp", backendAddr)
-	if err != nil {
-		// Check if it's a DNS error
-		if strings.Contains(err.Error(), "lookup") || strings.Contains(err.Error(), "timeout") {
-			log.Printf("Health check failed for %s backend at %s: DNS resolution error - %v", backendType, backendAddr, err)
-		} else {
-			log.Printf("Health check failed for %s backend at %s: %v", backendType, backendAddr, err)
-		}
-		return false
-	}
-
-	err = conn.Close()
-	if err != nil {
-		log.Printf("Failed to close backend connection: %v", err)
-		return false
-	}
-
-	return true
-}
-
-func (p *Proxy) markBackendUnhealthy() {
-	p.backendMutex.Lock()
-	currentBackend := p.currentBackend
-	p.backendMutex.Unlock()
-
-	log.Printf("Marking backend %s as unhealthy, attempting to find replacement", currentBackend)
-
-	// Clear backend first to allow immediate switching
-	p.setBackend("", "")
-
-	if err := p.discoverBackends(); err != nil {
-		log.Printf("Failed to discover new backend after marking %s unhealthy: %v", currentBackend, err)
-
-		// If no backends are available, try to use the service name directly as a last resort
-		p.forceServiceFallback()
-	} else {
-		// Discovery succeeded but still might need service fallback if health checks keep failing
-		p.backendMutex.RLock()
-		newBackend := p.currentBackend
-		p.backendMutex.RUnlock()
-
-		if newBackend == "" {
-			p.forceServiceFallback()
-		}
-	}
-}
-
-func (p *Proxy) forceServiceFallback() {
-	// Try fallback service first
-	if p.config.Backends.Fallback.Service != "" {
-		fallbackAddr := fmt.Sprintf("%s:%d", p.config.Backends.Fallback.Service, p.config.Backends.Fallback.Port)
-		if p.testConnection(fallbackAddr) {
-			p.setBackend("fallback", "") // Use empty IP to force service name usage
-			log.Printf("Forced fallback to service: %s", fallbackAddr)
-			return
-		} else {
-			log.Printf("Service fallback failed for %s: %v", fallbackAddr, "connection failed")
-		}
-	}
-
-	// Try primary service as fallback
-	if p.config.Backends.Primary.Service != "" {
-		primaryAddr := fmt.Sprintf("%s:%d", p.config.Backends.Primary.Service, p.config.Backends.Primary.Port)
-		if p.testConnection(primaryAddr) {
-			p.setBackend("primary", "") // Use empty IP to force service name usage
-			log.Printf("Forced fallback to primary service: %s", primaryAddr)
-			return
-		} else {
-			log.Printf("Service fallback failed for %s: %v", primaryAddr, "connection failed")
-		}
-	}
-
-	// All service fallback attempts failed - try to use pod IPs directly
-	p.backendMutex.RLock()
-	primaryInfo := p.primaryInfo
-	fallbackInfo := p.fallbackInfo
-	p.backendMutex.RUnlock()
-
-	// Try fallback pod IPs
-	if fallbackInfo != nil && len(fallbackInfo.Pods) > 0 {
-		for _, pod := range fallbackInfo.Pods {
-			if pod.Ready {
-				podAddr := fmt.Sprintf("%s:%d", pod.IP, p.config.Backends.Fallback.Port)
-				if p.testConnection(podAddr) {
-					p.setBackend("fallback", pod.IP)
-					log.Printf("Forced fallback to pod IP: %s", podAddr)
-					return
-				}
-			}
-		}
-	}
-
-	// Try primary pod IPs
-	if primaryInfo != nil && len(primaryInfo.Pods) > 0 {
-		for _, pod := range primaryInfo.Pods {
-			if pod.Ready {
-				podAddr := fmt.Sprintf("%s:%d", pod.IP, p.config.Backends.Primary.Port)
-				if p.testConnection(podAddr) {
-					p.setBackend("primary", pod.IP)
-					log.Printf("Forced fallback to primary pod IP: %s", podAddr)
-					return
-				}
-			}
-		}
-	}
-
-	log.Printf("All fallback attempts failed, no backend available - entering grace period")
-	p.backendMutex.Lock()
-	p.lastFailureTime = time.Now()
-	p.backendMutex.Unlock()
-}
-
-func (p *Proxy) testConnection(addr string) bool {
-	dialer := &net.Dialer{
-		Timeout: time.Duration(p.config.Timings.HealthcheckDial),
-	}
-
-	conn, err := dialer.Dial("tcp", addr)
-	if err != nil {
-		return false
-	}
-
-	err = conn.Close()
-	if err != nil {
-		log.Printf("Failed to close test connection: %v", err)
-		return false
-	}
-
-	return true
-}
-
-func (p *Proxy) startDiscovery() {
-	interval := time.Duration(p.config.Timings.DiscoveryInterval)
-	p.discoveryTicker = time.NewTicker(interval)
-
-	go func() {
-		for {
-			select {
-			case <-p.stopChan:
-				return
-			case <-p.discoveryTicker.C:
-				p.performDiscovery()
-			}
-		}
-	}()
-}
-
-func (p *Proxy) performDiscovery() {
-	p.backendMutex.RLock()
-	currentBackend := p.currentBackend
-	p.backendMutex.RUnlock()
-
-	// Only try to switch to primary if currently using fallback
-	if currentBackend == "fallback" {
-		namespace := p.config.Discovery.Namespace
-
-		// Refresh primary backend info
-		primaryInfo, err := p.k8sClient.GetBackendInfo(namespace, p.config.Backends.Primary.Type, p.config.Backends.Primary.Service)
-		if err != nil {
-			log.Printf("Discovery: Error checking primary backends: %v", err)
-			return
-		}
-
-		p.backendMutex.Lock()
-		p.primaryInfo = primaryInfo
-		p.backendMutex.Unlock()
-
-		if len(primaryInfo.Pods) > 0 {
-			readyPods := p.getReadyPods(primaryInfo.Pods)
-			if len(readyPods) > 0 {
-				// Check if primary service is healthy using service name first, then IP
-				var checkAddr string
-				if p.config.Backends.Primary.Service != "" {
-					checkAddr = fmt.Sprintf("%s:%d", p.config.Backends.Primary.Service, p.config.Backends.Primary.Port)
-				} else {
-					checkAddr = fmt.Sprintf("%s:%d", readyPods[0].IP, p.config.Backends.Primary.Port)
-				}
-
-				dialer := &net.Dialer{
-					Timeout: time.Duration(p.config.Timings.HealthcheckDial),
-				}
-
-				if conn, err := dialer.Dial("tcp", checkAddr); err == nil {
-					err := conn.Close()
-					if err != nil {
-						log.Printf("Failed to close backend connection: %v", err)
-						return
-					}
-					log.Printf("Discovery: Primary backend is now available, switching from fallback")
-					p.setBackend("primary", readyPods[0].IP)
-				} else {
-					log.Printf("Discovery: Primary backend found but health check failed: %v", err)
-				}
-			} else {
-				log.Printf("Discovery: Primary backend pods found but none are ready")
-			}
-		} else {
-			log.Printf("Discovery: No primary backend pods found")
-		}
-	}
+	<-done
 }
