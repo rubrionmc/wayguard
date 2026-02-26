@@ -467,7 +467,7 @@ func (p *Proxy) startTCPListener() {
 			err := conn.Close()
 			if err != nil {
 				log.Printf("Error closing rejected connection: %v", err)
-				return
+				continue
 			}
 		}
 	}
