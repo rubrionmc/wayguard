@@ -31,7 +31,7 @@ k8s_cluster_domain = "svc.cluster.local"
 
 [timings]
 # Supported units are: ns, us, ms, s, m, h and combinations of these
-# The units s, m and h do support decimal nummbers
+# The units s, m and h do support decimal numbers
 # Maximum time to wait when connecting to a backend server
 backend_dial = "5s"
 # Interval between discovery calls to the k8s api
