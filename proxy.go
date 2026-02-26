@@ -1,3 +1,16 @@
+/*
+ * This file is part of the Rubrion Group.
+ *
+ * Licensed under the Rubrion Public License (RPL), Version 1, 2026.
+ * You may not use this file except in compliance with the License.
+ *
+ * License:
+ * https://rubrionmc.github.io/.github/licensens/RUBRION_PUBLIC_LICENSE
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ */
 package main
 
 import (
@@ -388,13 +401,22 @@ func (p *Proxy) startTCPListener() {
 	if err != nil {
 		log.Fatalf("Failed to start listener on %s: %v", listenAddr, err)
 	}
-	defer listener.Close()
+	defer func(listener net.Listener) {
+		err := listener.Close()
+		if err != nil {
+			log.Printf("Error closing listener: %v", err)
+		}
+	}(listener)
 
 	log.Printf("Listening on %s", listenAddr)
 
 	go func() {
 		<-p.ctx.Done()
-		listener.Close()
+		err := listener.Close()
+		if err != nil {
+			log.Printf("Error closing listener: %v", err)
+			return
+		}
 	}()
 
 	for {
@@ -414,7 +436,12 @@ func (p *Proxy) startTCPListener() {
 }
 
 func (p *Proxy) handleConnection(clientConn net.Conn) {
-	defer clientConn.Close()
+	defer func(clientConn net.Conn) {
+		err := clientConn.Close()
+		if err != nil {
+			log.Printf("Error closing client connection: %s", err)
+		}
+	}(clientConn)
 
 	backend := p.GetHealthyBackend()
 	if backend == nil {
@@ -428,7 +455,12 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		log.Printf("Failed to connect to backend %s: %v", backend.Address, err)
 		return
 	}
-	defer backendConn.Close()
+	defer func(backendConn net.Conn) {
+		err := backendConn.Close()
+		if err != nil {
+			log.Printf("Error closing backend connection: %s", err)
+		}
+	}(backendConn)
 
 	log.Printf("Proxying connection from %s to %s (%s)",
 		clientConn.RemoteAddr(), backend.Name, backend.Address)
@@ -436,12 +468,20 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	done := make(chan struct{}, 2)
 
 	go func() {
-		io.Copy(backendConn, clientConn)
+		_, err := io.Copy(backendConn, clientConn)
+		if err != nil {
+			log.Println("Error copying data from client to backend:", err)
+			return
+		}
 		done <- struct{}{}
 	}()
 
 	go func() {
-		io.Copy(clientConn, backendConn)
+		_, err := io.Copy(clientConn, backendConn)
+		if err != nil {
+			log.Println("Error copying data from backend to client:", err)
+			return
+		}
 		done <- struct{}{}
 	}()
 

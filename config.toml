@@ -14,9 +14,6 @@ listen = ":25565"
 
 
 [discovery]
-# If enabled, backends can be discovered dynamically (e.g. via k8s api)
-# To support this feature KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT must be defined
-enabled = true
 # Namespace used for discovery separation
 # Useful if multiple environments share the same discovery system
 namespace = "rubrionmc"
