@@ -158,7 +158,7 @@ func (p *Proxy) healthCheckLoop() {
 func (p *Proxy) statusLoop() {
 	defer p.wg.Done()
 
-	ticker := time.NewTicker(p.config.Timings.LogRateLimitInterval)
+	ticker := time.NewTicker(p.config.Timings.LogLimitInterval)
 	defer ticker.Stop()
 
 	for {
@@ -547,10 +547,12 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	}
 
 	backendConn, err := net.DialTimeout("tcp", backend.Address, p.config.Timings.BackendDial)
+
 	if err != nil {
 		log.Printf("Failed to connect to backend %s: %v", backend.Address, err)
 		return
 	}
+
 	defer func(backendConn net.Conn) {
 		err := backendConn.Close()
 		if err != nil {
@@ -575,7 +577,6 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 			err := tc.CloseWrite()
 			if err != nil {
 				log.Printf("Error closing backend connection write side: %s", err)
-				return
 			}
 		}
 	}()
