@@ -46,11 +46,11 @@ type DiscoveryConfig struct {
 }
 
 type TimingConfig struct {
-	BackendDial          time.Duration `toml:"backend_dial"`
-	DiscoveryInterval    time.Duration `toml:"discovery_interval"`
-	HealthcheckDial      time.Duration `toml:"healthcheck_dial"`
-	HealthcheckInterval  time.Duration `toml:"healthcheck_interval"`
-	LogRateLimitInterval time.Duration `toml:"log_limit_interval"`
+	BackendDial         time.Duration `toml:"backend_dial"`
+	DiscoveryInterval   time.Duration `toml:"discovery_interval"`
+	HealthcheckDial     time.Duration `toml:"healthcheck_dial"`
+	HealthcheckInterval time.Duration `toml:"healthcheck_interval"`
+	LogLimitInterval    time.Duration `toml:"log_limit_interval"`
 }
 
 type BackendsConfig struct {
