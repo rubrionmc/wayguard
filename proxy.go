@@ -588,7 +588,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		if tc, ok := clientConn.(*net.TCPConn); ok {
 			err := tc.CloseWrite()
 			if err != nil {
-				log.Printf("Error closing backend connection write side: %s", err)
+				log.Printf("Error closing client connection write side: %s", err)
 				return
 			}
 		}
