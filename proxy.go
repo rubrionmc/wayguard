@@ -493,11 +493,12 @@ func newLimitedConn(conn net.Conn, limits LimitationsConfig) *limitedConn {
 
 func (lc *limitedConn) Read(b []byte) (int, error) {
 	maxPkt := lc.limits.MaxBytesPerPacket
-	if maxPkt > 0 && int32(len(b)) > maxPkt {
-		b = b[:maxPkt]
+	var reader io.Reader = lc.Conn
+	if maxPkt > 0 {
+		reader = io.LimitReader(lc.Conn, int64(maxPkt))
 	}
 
-	n, err := lc.Conn.Read(b)
+	n, err := reader.Read(b)
 	if n <= 0 || err != nil {
 		return n, err
 	}
