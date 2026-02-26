@@ -40,16 +40,22 @@ type Backend struct {
 }
 
 type Proxy struct {
-	config   *Config
-	backends map[BackendType]*Backend
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	config    *Config
+	backends  map[BackendType]*Backend
+	mu        sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	semaphore chan struct{}
 }
 
 func NewProxy(config *Config) *Proxy {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	maxConn := config.Limitations.MaxConnections
+	if maxConn <= 0 {
+		maxConn = 1024
+	}
 
 	backends := map[BackendType]*Backend{
 		BackendPrimary: {
@@ -67,10 +73,11 @@ func NewProxy(config *Config) *Proxy {
 	}
 
 	return &Proxy{
-		config:   config,
-		backends: backends,
-		ctx:      ctx,
-		cancel:   cancel,
+		config:    config,
+		backends:  backends,
+		ctx:       ctx,
+		cancel:    cancel,
+		semaphore: make(chan struct{}, maxConn),
 	}
 }
 
@@ -135,7 +142,7 @@ func (p *Proxy) setBackendAddress(typ BackendType, address string) {
 func (p *Proxy) healthCheckLoop() {
 	defer p.wg.Done()
 
-	ticker := time.NewTicker(time.Duration(p.config.Timings.HealthcheckInterval) * time.Millisecond)
+	ticker := time.NewTicker(p.config.Timings.HealthcheckInterval)
 	defer ticker.Stop()
 
 	for {
@@ -151,7 +158,7 @@ func (p *Proxy) healthCheckLoop() {
 func (p *Proxy) statusLoop() {
 	defer p.wg.Done()
 
-	ticker := time.NewTicker(time.Duration(p.config.Timings.LogRateLimitInterval) * time.Millisecond)
+	ticker := time.NewTicker(p.config.Timings.LogLimitInterval)
 	defer ticker.Stop()
 
 	for {
@@ -165,7 +172,14 @@ func (p *Proxy) statusLoop() {
 }
 
 func (p *Proxy) checkAllBackends() {
+	p.mu.RLock()
+	types := make([]BackendType, 0, len(p.backends))
 	for typ := range p.backends {
+		types = append(types, typ)
+	}
+	p.mu.RUnlock()
+
+	for _, typ := range types {
 		p.checkBackend(typ)
 	}
 }
@@ -177,7 +191,7 @@ func (p *Proxy) checkBackend(typ BackendType) {
 		return
 	}
 
-	timeout := time.Duration(p.config.Timings.HealthcheckDial) * time.Millisecond
+	timeout := p.config.Timings.HealthcheckDial
 	healthy := p.pingMinecraftServer(backend.Address, timeout)
 
 	wasHealthy := backend.Healthy
@@ -219,7 +233,12 @@ func (p *Proxy) pingMinecraftServer(address string, timeout time.Duration) bool 
 		return false
 	}
 
-	handshake := createHandshakePacket(host, portStr, 0x01)
+	handshake, err := createHandshakePacket(host, portStr, 0x01)
+	if err != nil {
+		log.Printf("Error creating handshake packet: %s", err)
+		return false
+	}
+
 	if _, err := conn.Write(handshake); err != nil {
 		return false
 	}
@@ -234,7 +253,7 @@ func (p *Proxy) pingMinecraftServer(address string, timeout time.Duration) bool 
 		return false
 	}
 
-	if packetLength <= 0 || packetLength > 32767 {
+	if packetLength <= 0 || packetLength > p.config.Limitations.MaxBytesPerPacket {
 		return false
 	}
 
@@ -246,7 +265,7 @@ func (p *Proxy) pingMinecraftServer(address string, timeout time.Duration) bool 
 	return true
 }
 
-func createHandshakePacket(host, port string, nextState byte) []byte {
+func createHandshakePacket(host, port string, nextState byte) ([]byte, error) {
 	var data []byte
 
 	data = appendVarInt(data, 0x00)
@@ -254,12 +273,11 @@ func createHandshakePacket(host, port string, nextState byte) []byte {
 	data = appendVarInt(data, int32(len(host)))
 	data = append(data, []byte(host)...)
 
-	portNum := 25575
-	_, err := fmt.Sscanf(port, "%d", &portNum)
-	if err != nil {
-		log.Printf("Error parsing port number: %s", err)
-		return nil
+	var portNum int
+	if _, err := fmt.Sscanf(port, "%d", &portNum); err != nil {
+		return nil, fmt.Errorf("error parsing port number %q: %w", port, err)
 	}
+
 	portBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(portBytes, uint16(portNum))
 	data = append(data, portBytes...)
@@ -269,7 +287,7 @@ func createHandshakePacket(host, port string, nextState byte) []byte {
 	packet := appendVarInt([]byte{}, int32(len(data)))
 	packet = append(packet, data...)
 
-	return packet
+	return packet, nil
 }
 
 func appendVarInt(data []byte, value int32) []byte {
@@ -317,7 +335,7 @@ func (p *Proxy) printBackendStatus() {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	log.Println("=== Backend Status ===")
+	log.Println("Backend Status Report:")
 	for _, backend := range p.backends {
 		status := "UNHEALTHY"
 		if backend.Healthy {
@@ -325,13 +343,12 @@ func (p *Proxy) printBackendStatus() {
 		}
 		log.Printf("%s - %s (%s)", backend.Name, status, backend.Address)
 	}
-	log.Println("======================")
 }
 
 func (p *Proxy) discoveryLoop() {
 	defer p.wg.Done()
 
-	ticker := time.NewTicker(time.Duration(p.config.Timings.DiscoveryInterval) * time.Millisecond)
+	ticker := time.NewTicker(p.config.Timings.DiscoveryInterval)
 	defer ticker.Stop()
 
 	for {
@@ -348,7 +365,14 @@ func (p *Proxy) discoverBackends() {
 	clusterDomain := p.config.Discovery.K8sClusterDomain
 	namespace := p.config.Discovery.Namespace
 
+	p.mu.RLock()
+	snapshot := make(map[BackendType]Backend, len(p.backends))
 	for typ, backend := range p.backends {
+		snapshot[typ] = *backend
+	}
+	p.mu.RUnlock()
+
+	for typ, backend := range snapshot {
 		serviceDNS := fmt.Sprintf("%s.%s.%s", backend.Name, namespace, clusterDomain)
 		address := fmt.Sprintf("%s:%d", serviceDNS, backend.Port)
 
@@ -415,9 +439,13 @@ func (p *Proxy) startTCPListener() {
 		err := listener.Close()
 		if err != nil {
 			log.Printf("Error closing listener: %v", err)
-			return
 		}
 	}()
+
+	maxConn := p.config.Limitations.MaxConnections
+	if maxConn <= 0 {
+		maxConn = 1024
+	}
 
 	for {
 		conn, err := listener.Accept()
@@ -431,11 +459,80 @@ func (p *Proxy) startTCPListener() {
 			}
 		}
 
-		go p.handleConnection(conn)
+		select {
+		case p.semaphore <- struct{}{}:
+			go p.handleConnection(conn)
+		default:
+			log.Printf("Connection limit reached (%d), rejecting %s", maxConn, conn.RemoteAddr())
+			err := conn.Close()
+			if err != nil {
+				log.Printf("Error closing rejected connection: %v", err)
+				continue
+			}
+		}
 	}
 }
 
+type limitedConn struct {
+	net.Conn
+	limits LimitationsConfig
+
+	windowStart     time.Time
+	bytesThisWindow int32
+	pktsThisWindow  int32
+	mu              sync.Mutex
+}
+
+func newLimitedConn(conn net.Conn, limits LimitationsConfig) *limitedConn {
+	return &limitedConn{
+		Conn:        conn,
+		limits:      limits,
+		windowStart: time.Now(),
+	}
+}
+
+func (lc *limitedConn) Read(b []byte) (int, error) {
+	maxPkt := lc.limits.MaxBytesPerPacket
+	var reader io.Reader = lc.Conn
+	if maxPkt > 0 {
+		reader = io.LimitReader(lc.Conn, int64(maxPkt))
+	}
+
+	n, err := reader.Read(b)
+	if n <= 0 || err != nil {
+		return n, err
+	}
+
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+
+	now := time.Now()
+	if now.Sub(lc.windowStart) >= time.Second {
+		lc.windowStart = now
+		lc.bytesThisWindow = 0
+		lc.pktsThisWindow = 0
+	}
+
+	lc.bytesThisWindow += int32(n)
+	lc.pktsThisWindow++
+
+	if lc.limits.MaxBytesPerSecond > 0 && lc.bytesThisWindow > lc.limits.MaxBytesPerSecond {
+		log.Printf("Rate limit exceeded (bytes/s) for %s — closing connection", lc.Conn.RemoteAddr())
+		_ = lc.Conn.Close()
+		return 0, fmt.Errorf("rate limit exceeded: bytes per second")
+	}
+
+	if lc.limits.MaxPacketsPerSecond > 0 && lc.pktsThisWindow > lc.limits.MaxPacketsPerSecond {
+		log.Printf("Rate limit exceeded (packets/s) for %s — closing connection", lc.Conn.RemoteAddr())
+		_ = lc.Conn.Close()
+		return 0, fmt.Errorf("rate limit exceeded: packets per second")
+	}
+
+	return n, nil
+}
+
 func (p *Proxy) handleConnection(clientConn net.Conn) {
+	defer func() { <-p.semaphore }()
 	defer func(clientConn net.Conn) {
 		err := clientConn.Close()
 		if err != nil {
@@ -449,12 +546,13 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 		return
 	}
 
-	backendConn, err := net.DialTimeout("tcp", backend.Address,
-		time.Duration(p.config.Timings.HealthcheckDial)*time.Millisecond)
+	backendConn, err := net.DialTimeout("tcp", backend.Address, p.config.Timings.BackendDial)
+
 	if err != nil {
 		log.Printf("Failed to connect to backend %s: %v", backend.Address, err)
 		return
 	}
+
 	defer func(backendConn net.Conn) {
 		err := backendConn.Close()
 		if err != nil {
@@ -465,25 +563,37 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	log.Printf("Proxying connection from %s to %s (%s)",
 		clientConn.RemoteAddr(), backend.Name, backend.Address)
 
-	done := make(chan struct{}, 2)
+	limited := newLimitedConn(clientConn, p.config.Limitations)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	go func() {
-		_, err := io.Copy(backendConn, clientConn)
-		if err != nil {
-			log.Println("Error copying data from client to backend:", err)
-			return
+		defer wg.Done()
+		if _, err := io.Copy(backendConn, limited); err != nil {
+			log.Printf("Error copying data from client to backend: %v", err)
 		}
-		done <- struct{}{}
+		if tc, ok := backendConn.(*net.TCPConn); ok {
+			err := tc.CloseWrite()
+			if err != nil {
+				log.Printf("Error closing backend connection write side: %s", err)
+			}
+		}
 	}()
 
 	go func() {
-		_, err := io.Copy(clientConn, backendConn)
-		if err != nil {
-			log.Println("Error copying data from backend to client:", err)
-			return
+		defer wg.Done()
+		if _, err := io.Copy(clientConn, backendConn); err != nil {
+			log.Printf("Error copying data from backend to client: %v", err)
 		}
-		done <- struct{}{}
+		if tc, ok := clientConn.(*net.TCPConn); ok {
+			err := tc.CloseWrite()
+			if err != nil {
+				log.Printf("Error closing client connection write side: %s", err)
+				return
+			}
+		}
 	}()
 
-	<-done
+	wg.Wait()
 }

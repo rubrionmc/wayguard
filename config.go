@@ -14,36 +14,30 @@
 package main
 
 import (
-	"errors"
+	"fmt"
 	"os"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
-type DurationMs time.Duration
-
-func (d *DurationMs) UnmarshalText(text []byte) error {
-	str := string(text)
-
-	parsed, err := time.ParseDuration(str)
-	if err != nil {
-		return err
-	}
-
-	*d = DurationMs(parsed.Milliseconds())
-	return nil
-}
-
 type Config struct {
-	Server    ServerConfig    `toml:"server"`
-	Discovery DiscoveryConfig `toml:"discovery"`
-	Timings   TimingConfig    `toml:"timings"`
-	Backends  BackendsConfig  `toml:"backends"`
+	Server      ServerConfig      `toml:"server"`
+	Limitations LimitationsConfig `toml:"limitations"`
+	Discovery   DiscoveryConfig   `toml:"discovery"`
+	Timings     TimingConfig      `toml:"timings"`
+	Backends    BackendsConfig    `toml:"backends"`
 }
 
 type ServerConfig struct {
 	Listen string `toml:"listen"`
+}
+
+type LimitationsConfig struct {
+	MaxConnections      int   `toml:"max_connections"`
+	MaxPacketsPerSecond int32 `toml:"max_pks_per_sec"`
+	MaxBytesPerSecond   int32 `toml:"max_bytes_per_sec"`
+	MaxBytesPerPacket   int32 `toml:"max_bytes_per_pk"`
 }
 
 type DiscoveryConfig struct {
@@ -52,11 +46,11 @@ type DiscoveryConfig struct {
 }
 
 type TimingConfig struct {
-	BackendDial          DurationMs `toml:"backend_dial"`
-	DiscoveryInterval    DurationMs `toml:"discovery_interval"`
-	HealthcheckDial      DurationMs `toml:"healthcheck_dial"`
-	HealthcheckInterval  DurationMs `toml:"healthcheck_interval"`
-	LogRateLimitInterval DurationMs `toml:"log_rate_limit_interval"`
+	BackendDial         time.Duration `toml:"backend_dial"`
+	DiscoveryInterval   time.Duration `toml:"discovery_interval"`
+	HealthcheckDial     time.Duration `toml:"healthcheck_dial"`
+	HealthcheckInterval time.Duration `toml:"healthcheck_interval"`
+	LogLimitInterval    time.Duration `toml:"log_limit_interval"`
 }
 
 type BackendsConfig struct {
@@ -71,7 +65,7 @@ type BackendConfig struct {
 
 func LoadConfigFromFile(path string) (*Config, error) {
 	if path == "" {
-		return nil, errors.New("config path is empty")
+		return nil, fmt.Errorf("config path is empty")
 	}
 
 	data, err := os.ReadFile(path)
@@ -85,7 +79,7 @@ func LoadConfigFromFile(path string) (*Config, error) {
 func LoadConfigFromData(tomlData []byte) (*Config, error) {
 	tomlString := string(tomlData)
 	if tomlString == "" {
-		return nil, errors.New("config string is empty")
+		return nil, fmt.Errorf("config string is empty")
 	}
 
 	var cfg Config

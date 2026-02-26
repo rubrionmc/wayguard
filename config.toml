@@ -12,6 +12,15 @@
 # "IP:PORT" or ":PORT" for all interfaces
 listen = ":25565"
 
+[limitations]
+# Maximum number of concurrent connections allowed
+max_connections = 1024
+# Maximum number of packets allowed per second per connection
+max_pks_per_sec = 1000
+# Maximum number of bytes allowed per second per connection
+max_bytes_per_sec = 2097151
+# Maximum packet size in bytes (e.g., 2097151 for 2 MB)
+max_bytes_per_pk = 2097151
 
 [discovery]
 # Namespace used for discovery separation
@@ -20,10 +29,9 @@ namespace = "rubrionmc"
 # Kubernetes cluster domain for service resolution
 k8s_cluster_domain = "svc.cluster.local"
 
-
 [timings]
-# Supported units are: ns, us, ms, s, m, h and commbinations of these
-# The units s, m and h do support decimal nummbers
+# Supported units are: ns, us, ms, s, m, h and combinations of these
+# The units s, m and h do support decimal numbers
 # Maximum time to wait when connecting to a backend server
 backend_dial = "5s"
 # Interval between discovery calls to the k8s api
@@ -33,7 +41,7 @@ healthcheck_dial = "2s"
 # Interval between automatic health checks
 healthcheck_interval = "3s"
 # Interval between automatic log updates (e.g. backend status)
-log_rate_limit_interval = "1m"
+log_limit_interval = "1m"
 
 
 [backends.primary]
