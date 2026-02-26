@@ -519,13 +519,13 @@ func (lc *limitedConn) Read(b []byte) (int, error) {
 	if lc.limits.MaxBytesPerSecond > 0 && lc.bytesThisWindow > lc.limits.MaxBytesPerSecond {
 		log.Printf("Rate limit exceeded (bytes/s) for %s — closing connection", lc.Conn.RemoteAddr())
 		_ = lc.Conn.Close()
-		return n, fmt.Errorf("rate limit exceeded: bytes per second")
+		return 0, fmt.Errorf("rate limit exceeded: bytes per second")
 	}
 
 	if lc.limits.MaxPacketsPerSecond > 0 && lc.pktsThisWindow > lc.limits.MaxPacketsPerSecond {
 		log.Printf("Rate limit exceeded (packets/s) for %s — closing connection", lc.Conn.RemoteAddr())
 		_ = lc.Conn.Close()
-		return n, fmt.Errorf("rate limit exceeded: packets per second")
+		return 0, fmt.Errorf("rate limit exceeded: packets per second")
 	}
 
 	return n, nil
