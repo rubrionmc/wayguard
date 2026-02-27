@@ -10,6 +10,8 @@
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *
+ * Copyright (c) 2024 Rubrion Group. All rights reserved.
  */
 package main
 
@@ -20,6 +22,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -29,6 +32,8 @@ type BackendType int
 const (
 	BackendPrimary BackendType = iota
 	BackendFallback
+	NextStateStatus = int32(1)
+	ProtocolVersion = int32(47)
 )
 
 type Backend struct {
@@ -40,13 +45,17 @@ type Backend struct {
 }
 
 type Proxy struct {
-	config    *Config
-	backends  map[BackendType]*Backend
-	mu        sync.RWMutex
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	config   *Config
+	backends map[BackendType]*Backend
+	mu       sync.RWMutex
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+
 	semaphore chan struct{}
+
+	started bool
+	startMu sync.Mutex
 }
 
 func NewProxy(config *Config) *Proxy {
@@ -82,6 +91,15 @@ func NewProxy(config *Config) *Proxy {
 }
 
 func (p *Proxy) Start() {
+	p.startMu.Lock()
+	if p.started {
+		p.startMu.Unlock()
+		log.Println("Proxy already started; ignoring duplicate Start call")
+		return
+	}
+	p.started = true
+	p.startMu.Unlock()
+
 	p.discoverBackends()
 	p.checkAllBackends()
 	p.printBackendStatus()
@@ -216,14 +234,12 @@ func (p *Proxy) pingMinecraftServer(address string, timeout time.Duration) bool 
 		return false
 	}
 	defer func(conn net.Conn) {
-		err := conn.Close()
-		if err != nil {
+		if err := conn.Close(); err != nil {
 			log.Printf("Error closing connection: %s", err)
 		}
 	}(conn)
 
-	err = conn.SetDeadline(time.Now().Add(timeout * 3))
-	if err != nil {
+	if err = conn.SetDeadline(time.Now().Add(timeout * 3)); err != nil {
 		log.Printf("Error setting deadline: %s", err)
 		return false
 	}
@@ -233,7 +249,7 @@ func (p *Proxy) pingMinecraftServer(address string, timeout time.Duration) bool 
 		return false
 	}
 
-	handshake, err := createHandshakePacket(host, portStr, 0x01)
+	handshake, err := createHandshakePacket(host, portStr, byte(NextStateStatus))
 	if err != nil {
 		log.Printf("Error creating handshake packet: %s", err)
 		return false
@@ -262,6 +278,11 @@ func (p *Proxy) pingMinecraftServer(address string, timeout time.Duration) bool 
 		return false
 	}
 
+	if len(response) == 0 || response[0] != 0x00 {
+		log.Printf("Unexpected packet ID from %s: got %#x, want 0x00", address, response[0])
+		return false
+	}
+
 	return true
 }
 
@@ -269,12 +290,12 @@ func createHandshakePacket(host, port string, nextState byte) ([]byte, error) {
 	var data []byte
 
 	data = appendVarInt(data, 0x00)
-	data = appendVarInt(data, 47)
+	data = appendVarInt(data, ProtocolVersion)
 	data = appendVarInt(data, int32(len(host)))
 	data = append(data, []byte(host)...)
 
-	var portNum int
-	if _, err := fmt.Sscanf(port, "%d", &portNum); err != nil {
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
 		return nil, fmt.Errorf("error parsing port number %q: %w", port, err)
 	}
 
@@ -385,7 +406,6 @@ func (p *Proxy) discoverBackends() {
 		if currentBackend.Address != address {
 			p.setBackendAddress(typ, address)
 			log.Printf("Discovered backend %s at %s", backend.Name, address)
-			p.checkBackend(typ)
 		}
 	}
 }
@@ -425,27 +445,24 @@ func (p *Proxy) startTCPListener() {
 	if err != nil {
 		log.Fatalf("Failed to start listener on %s: %v", listenAddr, err)
 	}
-	defer func(listener net.Listener) {
-		err := listener.Close()
-		if err != nil {
-			log.Printf("Error closing listener: %v", err)
-		}
-	}(listener)
 
 	log.Printf("Listening on %s", listenAddr)
 
-	go func() {
-		<-p.ctx.Done()
-		err := listener.Close()
-		if err != nil {
+	var closeOnce sync.Once
+	closeListener := func() {
+		if err := listener.Close(); err != nil {
 			log.Printf("Error closing listener: %v", err)
 		}
+	}
+
+	defer func() { closeOnce.Do(closeListener) }()
+
+	go func() {
+		<-p.ctx.Done()
+		closeOnce.Do(closeListener)
 	}()
 
-	maxConn := p.config.Limitations.MaxConnections
-	if maxConn <= 0 {
-		maxConn = 1024
-	}
+	maxConn := cap(p.semaphore)
 
 	for {
 		conn, err := listener.Accept()
@@ -464,10 +481,8 @@ func (p *Proxy) startTCPListener() {
 			go p.handleConnection(conn)
 		default:
 			log.Printf("Connection limit reached (%d), rejecting %s", maxConn, conn.RemoteAddr())
-			err := conn.Close()
-			if err != nil {
+			if err := conn.Close(); err != nil {
 				log.Printf("Error closing rejected connection: %v", err)
-				continue
 			}
 		}
 	}
@@ -478,8 +493,8 @@ type limitedConn struct {
 	limits LimitationsConfig
 
 	windowStart     time.Time
-	bytesThisWindow int32
-	pktsThisWindow  int32
+	bytesThisWindow int64
+	pktsThisWindow  int64
 	mu              sync.Mutex
 }
 
@@ -493,12 +508,11 @@ func newLimitedConn(conn net.Conn, limits LimitationsConfig) *limitedConn {
 
 func (lc *limitedConn) Read(b []byte) (int, error) {
 	maxPkt := lc.limits.MaxBytesPerPacket
-	var reader io.Reader = lc.Conn
-	if maxPkt > 0 {
-		reader = io.LimitReader(lc.Conn, int64(maxPkt))
+	if maxPkt > 0 && int32(len(b)) > maxPkt {
+		b = b[:maxPkt]
 	}
 
-	n, err := reader.Read(b)
+	n, err := lc.Conn.Read(b)
 	if n <= 0 || err != nil {
 		return n, err
 	}
@@ -513,16 +527,16 @@ func (lc *limitedConn) Read(b []byte) (int, error) {
 		lc.pktsThisWindow = 0
 	}
 
-	lc.bytesThisWindow += int32(n)
+	lc.bytesThisWindow += int64(n)
 	lc.pktsThisWindow++
 
-	if lc.limits.MaxBytesPerSecond > 0 && lc.bytesThisWindow > lc.limits.MaxBytesPerSecond {
+	if lc.limits.MaxBytesPerSecond > 0 && lc.bytesThisWindow > int64(lc.limits.MaxBytesPerSecond) {
 		log.Printf("Rate limit exceeded (bytes/s) for %s — closing connection", lc.Conn.RemoteAddr())
 		_ = lc.Conn.Close()
 		return 0, fmt.Errorf("rate limit exceeded: bytes per second")
 	}
 
-	if lc.limits.MaxPacketsPerSecond > 0 && lc.pktsThisWindow > lc.limits.MaxPacketsPerSecond {
+	if lc.limits.MaxPacketsPerSecond > 0 && lc.pktsThisWindow > int64(lc.limits.MaxPacketsPerSecond) {
 		log.Printf("Rate limit exceeded (packets/s) for %s — closing connection", lc.Conn.RemoteAddr())
 		_ = lc.Conn.Close()
 		return 0, fmt.Errorf("rate limit exceeded: packets per second")
@@ -532,13 +546,18 @@ func (lc *limitedConn) Read(b []byte) (int, error) {
 }
 
 func (p *Proxy) handleConnection(clientConn net.Conn) {
-	defer func() { <-p.semaphore }()
-	defer func(clientConn net.Conn) {
-		err := clientConn.Close()
-		if err != nil {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered panic in handleConnection: %v", r)
+		}
+		<-p.semaphore
+	}()
+
+	defer func() {
+		if err := clientConn.Close(); err != nil {
 			log.Printf("Error closing client connection: %s", err)
 		}
-	}(clientConn)
+	}()
 
 	backend := p.GetHealthyBackend()
 	if backend == nil {
@@ -547,18 +566,16 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 	}
 
 	backendConn, err := net.DialTimeout("tcp", backend.Address, p.config.Timings.BackendDial)
-
 	if err != nil {
 		log.Printf("Failed to connect to backend %s: %v", backend.Address, err)
 		return
 	}
 
-	defer func(backendConn net.Conn) {
-		err := backendConn.Close()
-		if err != nil {
+	defer func() {
+		if err := backendConn.Close(); err != nil {
 			log.Printf("Error closing backend connection: %s", err)
 		}
-	}(backendConn)
+	}()
 
 	log.Printf("Proxying connection from %s to %s (%s)",
 		clientConn.RemoteAddr(), backend.Name, backend.Address)
@@ -574,8 +591,7 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 			log.Printf("Error copying data from client to backend: %v", err)
 		}
 		if tc, ok := backendConn.(*net.TCPConn); ok {
-			err := tc.CloseWrite()
-			if err != nil {
+			if err := tc.CloseWrite(); err != nil {
 				log.Printf("Error closing backend connection write side: %s", err)
 			}
 		}
@@ -587,10 +603,8 @@ func (p *Proxy) handleConnection(clientConn net.Conn) {
 			log.Printf("Error copying data from backend to client: %v", err)
 		}
 		if tc, ok := clientConn.(*net.TCPConn); ok {
-			err := tc.CloseWrite()
-			if err != nil {
+			if err := tc.CloseWrite(); err != nil {
 				log.Printf("Error closing client connection write side: %s", err)
-				return
 			}
 		}
 	}()
